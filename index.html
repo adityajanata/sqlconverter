@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL Converter Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="js/vue.js"></script>
+
+    <style>
+        body {
+            background: linear-gradient(135deg, #a7cdf8, #5aa2e8 60%, #6bbff4);
+            min-height: 100vh;
+        }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+        [v-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="flex items-center justify-center p-4 font-sans text-gray-700">
+
+    <div id="app" v-cloak class="w-full max-w-4xl bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row min-h-[600px]">
+
+        <div class="w-full md:w-1/2 p-6 border-r border-gray-100 flex flex-col">
+            <div class="mb-4">
+                <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <span>📥</span> Input Query
+                </h2>
+                <p class="text-xs text-gray-400">Contoh: INSERT INTO ... VALUES(...) atau UPDATE ... WHERE ...</p>
+            </div>
+
+            <textarea
+                v-model="inputSql"
+                @input="debouncedParse"
+                class="w-full flex-1 p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-400 focus:outline-none font-mono text-xs resize-none transition-all whitespace-pre"
+                placeholder="Paste query SQL lo disini..."></textarea>
+
+            <div class="mt-4 flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                    <span v-if="parsedRows.length > 0" class="text-xs font-bold text-green-600 bg-green-100 px-3 py-1 rounded-full">
+                        ✅ {{ parsedRows.length }} Data Detected (Type: {{ inputType }})
+                    </span>
+                    <span v-else class="text-xs font-bold text-red-500 bg-red-100 px-3 py-1 rounded-full">
+                        ❌ No Data
+                    </span>
+                </div>
+                <button @click="clearAll" class="text-xs text-gray-400 hover:text-red-500 font-medium transition-colors">
+                    Reset
+                </button>
+            </div>
+        </div>
+
+        <div class="w-full md:w-1/2 p-6 bg-gray-50/50 flex flex-col">
+
+            <div class="mb-4">
+                <h2 class="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                    <span>⚙️</span> Filter Columns
+                </h2>
+
+                <div v-if="inputType === 'INSERT'" class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <label class="cursor-pointer flex items-center gap-2 select-none">
+                        <input type="checkbox" v-model="splitQueryByValue"
+                               class="w-4 h-4 text-blue-500 rounded focus:ring-blue-400 border-blue-300">
+                        <span class="text-sm font-bold text-blue-700">Split Query by Unique Value</span>
+                    </label>
+                    <p class="text-xs text-blue-600 ml-6 mt-1">
+                        Jika dicentang, akan membagi SELECT berdasarkan nilai unik kolom pertama yang dipilih.
+                    </p>
+                </div>
+
+                <div v-if="columns.length > 0"
+                     class="max-h-[150px] overflow-y-auto pr-2"
+                     :class="['grid gap-2', columns.length >= 6 ? 'grid-cols-1' : 'grid-cols-2']">
+                    <label v-for="col in columns" :key="col"
+                           class="cursor-pointer group flex items-center gap-2 p-2 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-all select-none shadow-sm">
+                        <input type="checkbox" :value="col" v-model="selectedCols"
+                               class="w-4 h-4 text-blue-500 rounded focus:ring-blue-400 border-gray-300">
+                        <span class="text-xs font-bold text-gray-600 group-hover:text-blue-600 break-all">{{ col }}</span>
+                    </label>
+                </div>
+
+                <div v-else class="text-center py-8 text-gray-400 text-sm border-2 border-dashed border-gray-200 rounded-xl bg-gray-50">
+                    <p>Paste query dulu cuy</p>
+                </div>
+            </div>
+
+            <div class="flex-1 flex flex-col">
+                <h2 class="text-xl font-bold text-gray-800 mb-2 flex items-center gap-2">
+                    <span>📤</span> Output SELECT
+                </h2>
+                <div class="relative flex-1">
+                    <textarea
+                        readonly
+                        :value="generatedQuery"
+                        class="w-full h-full p-4 bg-gray-800 text-green-400 border border-gray-700 rounded-xl focus:outline-none font-mono text-xs resize-none shadow-inner"
+                        placeholder="Hasil query bakal muncul disini..."></textarea>
+
+                    <button v-if="generatedQuery" @click="copyToClipboard"
+                            class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1 rounded-md shadow transition-colors">
+                        {{ copyText }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    // Contoh input yang mencakup N'...' dan '...'
+                    inputSql: `UPDATE DB.schema.TABLE1 SET NAME = N'Clarissa' WHERE ID = '12341' AND LAST_UPDATE = '2022-09-20 13:33:20.750';\nUPDATE DB.schema.TABLE1 SET NAME = N'John' WHERE ID = N'12342' AND VALUE = '90';`,
+                    tableName: '',
+                    columns: [],
+                    parsedRows: [],
+                    selectedCols: [],
+                    splitQueryByValue: false,
+                    copyText: 'Copy',
+                    debounceTimer: null,
+                    inputType: 'NONE'
+                }
+            },
+            mounted() {
+                this.parseSql();
+            },
+            computed: {
+                generatedQuery() {
+                    if (!this.tableName || this.selectedCols.length === 0 || this.parsedRows.length === 0) {
+                        return '';
+                    }
+
+                    const baseQueryTemplate = `SELECT * FROM ${this.tableName} WITH (NOLOCK) WHERE `;
+
+                    if (this.inputType === 'UPDATE') {
+                        // --- LOGIC UNTUK UPDATE (Mode Single Query) ---
+
+                        const conditions = this.selectedCols.map(col => {
+                            const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
+                            const uniqueValues = [...new Set(rawValues)];
+
+                            const cleanValues = uniqueValues.map(this.cleanSqlValue);
+
+                            return `${col} IN (${cleanValues.join(',')})`;
+                        });
+
+                        return baseQueryTemplate + conditions.join(' AND ');
+
+                    } else if (this.inputType === 'INSERT') {
+                        // --- LOGIC UNTUK INSERT (Split atau Gabung) ---
+
+                        const primarySplitCol = this.selectedCols[0];
+                        const otherSelectedCols = this.selectedCols.slice(1);
+
+                        if (this.splitQueryByValue) {
+                            let queryGroups = {};
+
+                            this.parsedRows.forEach(row => {
+                                const splitValue = row[primarySplitCol];
+                                if (!queryGroups[splitValue]) {
+                                    queryGroups[splitValue] = { [primarySplitCol]: [splitValue] };
+                                    otherSelectedCols.forEach(col => {
+                                        queryGroups[splitValue][col] = [];
+                                    });
+                                }
+
+                                otherSelectedCols.forEach(col => {
+                                    if (row[col] && !queryGroups[splitValue][col].includes(row[col])) {
+                                        queryGroups[splitValue][col].push(row[col]);
+                                    }
+                                });
+                            });
+
+                            let allQueries = [];
+
+                            for (const splitValue in queryGroups) {
+                                const group = queryGroups[splitValue];
+                                let conditions = [];
+
+                                const cleanedSplitValue = this.cleanSqlValue(splitValue);
+                                conditions.push(`${primarySplitCol} IN (${cleanedSplitValue})`);
+
+                                otherSelectedCols.forEach(col => {
+                                    if (group[col] && group[col].length > 0) {
+                                        const cleanValues = group[col].map(this.cleanSqlValue);
+                                        conditions.push(`${col} IN (${cleanValues.join(',')})`);
+                                    }
+                                });
+
+                                allQueries.push(baseQueryTemplate + conditions.join(' AND '));
+                            }
+
+                            return allQueries.join('\n');
+
+                        } else {
+                            // Gabung Mode
+                            const conditions = this.selectedCols.map(col => {
+                                const rawValues = this.parsedRows.map(row => row[col]).filter(v => v !== undefined);
+                                const uniqueValues = [...new Set(rawValues)];
+
+                                const cleanValues = uniqueValues.map(this.cleanSqlValue);
+
+                                return `${col} IN (${cleanValues.join(',')})`;
+                            });
+
+                            return baseQueryTemplate + conditions.join(' AND ');
+                        }
+                    }
+                    return '';
+                }
+            },
+            methods: {
+                cleanSqlValue(rawValue) {
+                    let v = rawValue.trim();
+                    // Regex ini nangkep isi di dalem quote: N'Isi' atau 'Isi'
+                    const match = v.match(/N?'(.*)'/);
+                    if (match) {
+                        // Balikin jadi 'Isi' (tanpa N)
+                        return `'${match[1].replace(/'/g, "''")}'`;
+                    }
+                    return v;
+                },
+                debouncedParse() {
+                    clearTimeout(this.debounceTimer);
+                    this.debounceTimer = setTimeout(() => {
+                        this.parseSql();
+                    }, 300);
+                },
+                parseSql() {
+                    this.resetParseState();
+                    const lines = this.inputSql.split('\n').filter(line => line.trim() !== '');
+                    if (lines.length === 0) return;
+
+                    const firstLine = lines[0].toUpperCase().trim();
+
+                    if (firstLine.startsWith('INSERT INTO')) {
+                        this.inputType = 'INSERT';
+                        this.parseInsert(lines);
+                    } else if (firstLine.startsWith('UPDATE')) {
+                        this.inputType = 'UPDATE';
+                        this.parseUpdate(lines);
+                    }
+
+                    if (!this.selectedCols.every(c => this.columns.includes(c))) {
+                        this.selectedCols = [];
+                    }
+                },
+
+                parseInsert(lines) {
+                    const structMatch = lines[0].match(/INSERT\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES/i);
+
+                    if (!structMatch) return;
+
+                    this.tableName = structMatch[1].trim();
+                    this.columns = structMatch[2].split(',').map(c => c.trim());
+
+                    const newRows = [];
+                    lines.forEach(line => {
+                        const valIdx = line.toUpperCase().indexOf('VALUES');
+                        if (valIdx === -1) return;
+
+                        let valStr = line.substring(valIdx);
+                        const startParen = valStr.indexOf('(');
+                        const endParen = valStr.lastIndexOf(')');
+
+                        if (startParen === -1 || endParen === -1) return;
+
+                        const content = valStr.substring(startParen + 1, endParen);
+                        const matches = content.match(/(N?'[^']*'|'[^']*'|[^,\s]+)/g);
+
+                        if (matches && matches.length === this.columns.length) {
+                            let rowObj = {};
+                            this.columns.forEach((col, i) => {
+                                rowObj[col] = matches[i];
+                            });
+                            newRows.push(rowObj);
+                        }
+                    });
+
+                    this.parsedRows = newRows;
+                },
+
+                parseUpdate(lines) {
+                    // Regex untuk ambil Tabel dan Klausa WHERE
+                    const tableRegex = /UPDATE\s+(.+?)\s+SET.*?\s+WHERE\s+(.*)/is;
+
+                    // Regex yang diperbaiki untuk mencari kondisi [Kolom] = [Nilai]
+                    // Nilai bisa berupa: Angka/Kata (non-spasi), atau string yang dikurung kutip (bisa ada N)
+                    // ([\w\.]+): Nama Kolom
+                    // \s*=\s*: Tanda sama dengan dengan spasi
+                    // (N?'[^']*?'|\S+): Nilai. N?': Optional N, diikuti kutip, lalu non-kutip ('[^']*?'), lalu kutip. OR (\S+): non-spasi (untuk angka/NULL)
+                    const conditionRegex = /([\w\.]+)\s*=\s*(N?'[^']*?'|\S+)/gi;
+
+                    this.parsedRows = [];
+                    let detectedColumns = [];
+
+                    lines.forEach(line => {
+                         const lineMatch = line.match(tableRegex);
+                         if (lineMatch) {
+                            this.tableName = lineMatch[1].trim();
+                            const lineWhereClause = lineMatch[2].trim().replace(/;$/, '');
+                            let lineRowObj = {};
+                            let lineTempMatch;
+
+                            conditionRegex.lastIndex = 0;
+
+                            while ((lineTempMatch = conditionRegex.exec(lineWhereClause)) !== null) {
+                                const colName = lineTempMatch[1].trim();
+                                const colValue = lineTempMatch[2].trim();
+
+                                lineRowObj[colName] = colValue;
+                                if (!detectedColumns.includes(colName)) {
+                                    detectedColumns.push(colName);
+                                }
+                            }
+                            if (Object.keys(lineRowObj).length > 0) {
+                                this.parsedRows.push(lineRowObj);
+                            }
+                         }
+                    });
+
+                    // Update kolom yang tersedia di filter hanya dari klausa WHERE
+                    this.columns = detectedColumns;
+                },
+
+                resetParseState() {
+                    this.tableName = '';
+                    this.columns = [];
+                    this.parsedRows = [];
+                    this.inputType = 'NONE';
+                },
+
+                clearAll() {
+                    this.inputSql = '';
+                    this.columns = [];
+                    this.parsedRows = [];
+                    this.selectedCols = [];
+                    this.tableName = '';
+                    this.splitQueryByValue = false;
+                    this.inputType = 'NONE';
+                },
+                // FUNGSI BARU (Menggunakan execCommand sebagai fallback)
+                copyToClipboard() {
+                    let success = false;
+
+                    // Coba metode modern (navigator.clipboard) dulu, kalau ada
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(this.generatedQuery);
+                        success = true;
+                    } else {
+                        // FALLBACK: Menggunakan metode lama (execCommand)
+                        const textarea = document.createElement('textarea');
+                        textarea.value = this.generatedQuery;
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        try {
+                            document.execCommand('copy');
+                            success = true;
+                        } catch (err) {
+                            console.error('Fallback copy method failed:', err);
+                        }
+                        document.body.removeChild(textarea);
+                    }
+
+                    if (success) {
+                        this.copyText = 'Copied!';
+                        setTimeout(() => this.copyText = 'Copy', 2000);
+                    }
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
