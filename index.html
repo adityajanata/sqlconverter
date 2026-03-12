@@ -216,11 +216,10 @@
             methods: {
                 cleanSqlValue(rawValue) {
                     let v = rawValue.trim();
-                    // Regex ini nangkep isi di dalem quote: N'Isi' atau 'Isi'
-                    const match = v.match(/N?'(.*)'/);
+                    // ✅ Fix: handle escaped quotes di dalam nilai
+                    const match = v.match(/^N?'((?:[^']|'')*)'$/);
                     if (match) {
-                        // Balikin jadi 'Isi' (tanpa N)
-                        return `'${match[1].replace(/'/g, "''")}'`;
+                        return `'${match[1]}'`;
                     }
                     return v;
                 },
@@ -252,26 +251,26 @@
 
                 parseInsert(lines) {
                     const structMatch = lines[0].match(/INSERT\s+INTO\s+(.+?)\s*\((.+?)\)\s*VALUES/i);
-
                     if (!structMatch) return;
-
+                
                     this.tableName = structMatch[1].trim();
                     this.columns = structMatch[2].split(',').map(c => c.trim());
-
+                
                     const newRows = [];
                     lines.forEach(line => {
                         const valIdx = line.toUpperCase().indexOf('VALUES');
                         if (valIdx === -1) return;
-
+                
                         let valStr = line.substring(valIdx);
                         const startParen = valStr.indexOf('(');
                         const endParen = valStr.lastIndexOf(')');
-
                         if (startParen === -1 || endParen === -1) return;
-
+                
                         const content = valStr.substring(startParen + 1, endParen);
-                        const matches = content.match(/(N?'[^']*'|'[^']*'|[^,\s]+)/g);
-
+                        
+                        // ✅ Fix: handle escaped quotes ('') di dalam string
+                        const matches = content.match(/(N?'(?:[^']|'')*'|NULL|[^,\s]+)/gi);
+                
                         if (matches && matches.length === this.columns.length) {
                             let rowObj = {};
                             this.columns.forEach((col, i) => {
@@ -280,7 +279,7 @@
                             newRows.push(rowObj);
                         }
                     });
-
+                
                     this.parsedRows = newRows;
                 },
 
